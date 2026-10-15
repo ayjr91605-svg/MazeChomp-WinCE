@@ -1,0 +1,63 @@
+name: Build MazeChomp for Windows CE ARM
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "mazechomp.c"
+      - ".github/workflows/build-wince-arm.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    # Public CeGCC container with an ARM Windows CE cross-compiler.
+    container:
+      image: ghcr.io/enlyze/windows-ce-build-environment-arm
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Show compiler version
+        run: arm-mingw32ce-gcc --version
+
+      - name: Build MazeChomp.exe
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          # Build a small GUI executable using only standard Windows CE APIs.
+          # First try the normal CeGCC link. If this image exposes GDI through
+          # coredll rather than a separate libgdi32, retry without -lgdi32.
+          if arm-mingw32ce-gcc \
+              -Os -Wall \
+              -DUNICODE -D_UNICODE \
+              -D_WIN32_WCE=0x0700 \
+              -mwin32 \
+              mazechomp.c \
+              -o MazeChomp.exe \
+              -lcoredll -lgdi32; then
+            echo "Built with coredll + gdi32"
+          else
+            echo "Retrying with coredll only..."
+            arm-mingw32ce-gcc \
+              -Os -Wall \
+              -DUNICODE -D_UNICODE \
+              -D_WIN32_WCE=0x0700 \
+              -mwin32 \
+              mazechomp.c \
+              -o MazeChomp.exe \
+              -lcoredll
+          fi
+
+          arm-mingw32ce-strip MazeChomp.exe || true
+          file MazeChomp.exe || true
+          ls -lh MazeChomp.exe
+
+      - name: Upload MazeChomp.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: MazeChomp-WinCE-ARM
+          path: MazeChomp.exe
+          if-no-files-found: error
