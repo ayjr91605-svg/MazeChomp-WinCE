@@ -20,7 +20,7 @@
 #define MAP_H 15
 #define GHOSTS 3
 #define TIMER_ID 1
-#define TICK_MS 200
+#define TICK_MS 300
 
 static const char *kMap[MAP_H] = {
     "###################",
@@ -47,6 +47,13 @@ typedef struct {
 
 static HINSTANCE g_hInst;
 static HWND g_hwnd;
+
+/* Persistent back buffer to avoid allocating a bitmap on every frame. */
+static HDC g_backDC = NULL;
+static HBITMAP g_backBmp = NULL;
+static HBITMAP g_backOldBmp = NULL;
+static int g_backW = 0;
+static int g_backH = 0;
 static char g_map[MAP_H][MAP_W + 1];
 static Actor g_player;
 static Actor g_ghost[GHOSTS];
@@ -385,6 +392,57 @@ static void handle_touch(HWND hwnd, int x, int y)
     else set_player_dir(1, 0);
 }
 
+
+static void destroy_backbuffer(void)
+{
+    if (g_backDC) {
+        if (g_backOldBmp)
+            SelectObject(g_backDC, g_backOldBmp);
+        if (g_backBmp)
+            DeleteObject(g_backBmp);
+        DeleteDC(g_backDC);
+    }
+
+    g_backDC = NULL;
+    g_backBmp = NULL;
+    g_backOldBmp = NULL;
+    g_backW = 0;
+    g_backH = 0;
+}
+
+static int ensure_backbuffer(HWND hwnd, HDC referenceDC)
+{
+    RECT rc;
+    int w, h;
+
+    GetClientRect(hwnd, &rc);
+    w = rc.right - rc.left;
+    h = rc.bottom - rc.top;
+
+    if (w <= 0 || h <= 0)
+        return 0;
+
+    if (g_backDC && g_backBmp && g_backW == w && g_backH == h)
+        return 1;
+
+    destroy_backbuffer();
+
+    g_backDC = CreateCompatibleDC(referenceDC);
+    if (!g_backDC)
+        return 0;
+
+    g_backBmp = CreateCompatibleBitmap(referenceDC, w, h);
+    if (!g_backBmp) {
+        destroy_backbuffer();
+        return 0;
+    }
+
+    g_backOldBmp = (HBITMAP)SelectObject(g_backDC, g_backBmp);
+    g_backW = w;
+    g_backH = h;
+    return 1;
+}
+
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg) {
@@ -411,37 +469,33 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         handle_touch(hwnd, LOWORD(lParam), HIWORD(lParam));
         return 0;
 
+    case WM_ERASEBKGND:
+        /* We paint the entire frame ourselves. Suppress the default erase pass. */
+        return 1;
+
+    case WM_SIZE:
+        /* Recreate the persistent back buffer on the next paint. */
+        destroy_backbuffer();
+        InvalidateRect(hwnd, NULL, FALSE);
+        return 0;
+
     case WM_PAINT:
         {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
             RECT rc;
-            HDC memDC;
-            HBITMAP memBmp;
-            HBITMAP oldBmp;
             int w, h;
 
             GetClientRect(hwnd, &rc);
             w = rc.right - rc.left;
             h = rc.bottom - rc.top;
 
-            /* Double-buffer the whole frame to greatly reduce flicker. */
-            memDC = CreateCompatibleDC(hdc);
-            memBmp = CreateCompatibleBitmap(hdc, w, h);
+            if (ensure_backbuffer(hwnd, hdc)) {
+                paint_game(hwnd, g_backDC);
 
-            if (memDC && memBmp) {
-                oldBmp = (HBITMAP)SelectObject(memDC, memBmp);
-
-                paint_game(hwnd, memDC);
-                BitBlt(hdc, 0, 0, w, h, memDC, 0, 0, SRCCOPY);
-
-                SelectObject(memDC, oldBmp);
-                DeleteObject(memBmp);
-                DeleteDC(memDC);
+                /* Copy the completed frame to the LCD in one operation. */
+                BitBlt(hdc, 0, 0, w, h, g_backDC, 0, 0, SRCCOPY);
             } else {
-                /* Fall back to direct drawing if the device is short on GDI resources. */
-                if (memBmp) DeleteObject(memBmp);
-                if (memDC) DeleteDC(memDC);
                 paint_game(hwnd, hdc);
             }
 
@@ -451,6 +505,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_DESTROY:
         KillTimer(hwnd, TIMER_ID);
+        destroy_backbuffer();
         PostQuitMessage(0);
         return 0;
     }
