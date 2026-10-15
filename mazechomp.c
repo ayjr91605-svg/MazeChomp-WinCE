@@ -20,7 +20,7 @@
 #define MAP_H 15
 #define GHOSTS 3
 #define TIMER_ID 1
-#define TICK_MS 110
+#define TICK_MS 200
 
 static const char *kMap[MAP_H] = {
     "###################",
@@ -415,7 +415,36 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
-            paint_game(hwnd, hdc);
+            RECT rc;
+            HDC memDC;
+            HBITMAP memBmp;
+            HBITMAP oldBmp;
+            int w, h;
+
+            GetClientRect(hwnd, &rc);
+            w = rc.right - rc.left;
+            h = rc.bottom - rc.top;
+
+            /* Double-buffer the whole frame to greatly reduce flicker. */
+            memDC = CreateCompatibleDC(hdc);
+            memBmp = CreateCompatibleBitmap(hdc, w, h);
+
+            if (memDC && memBmp) {
+                oldBmp = (HBITMAP)SelectObject(memDC, memBmp);
+
+                paint_game(hwnd, memDC);
+                BitBlt(hdc, 0, 0, w, h, memDC, 0, 0, SRCCOPY);
+
+                SelectObject(memDC, oldBmp);
+                DeleteObject(memBmp);
+                DeleteDC(memDC);
+            } else {
+                /* Fall back to direct drawing if the device is short on GDI resources. */
+                if (memBmp) DeleteObject(memBmp);
+                if (memDC) DeleteDC(memDC);
+                paint_game(hwnd, hdc);
+            }
+
             EndPaint(hwnd, &ps);
         }
         return 0;
@@ -445,7 +474,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     ZeroMemory(&wc, sizeof(wc));
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
-    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    wc.hbrBackground = NULL;
     wc.lpszClassName = L"MazeChompWinCE";
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
 
